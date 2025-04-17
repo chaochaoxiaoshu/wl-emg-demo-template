@@ -1,5 +1,5 @@
-appId: com.wavaletech.EMGDemo4
-productName: WL-EMG-demo4
+appId: com.wavaletech.EMGdemo5
+productName: WL-EMG-demo5
 directories:
   buildResources: build
 files:
@@ -12,7 +12,7 @@ files:
 asarUnpack:
   - resources/**
 win:
-  executableName: WL-EMG-demo4
+  executableName: WL-EMG-demo5
 nsis:
   artifactName: ${name}-${version}-setup.${ext}
   shortcutName: ${productName}

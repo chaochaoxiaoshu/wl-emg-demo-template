@@ -1,211 +1,264 @@
-import { useState, useEffect } from 'react'
-import { WeatherCard } from './components/weather-card'
-import { motion } from 'motion/react'
+import { useCallback, useEffect, useRef, useState } from 'react'
+import broswer from '@/assets/img/broswer.svg'
+import location from '@/assets/img/location.svg'
+import mic from '@/assets/img/mic.svg'
+import ticiqi from '@/assets/img/ticiqi.svg'
+import camera from '@/assets/img/camera.svg'
 
-import weatherIcon from '@/assets/img/tianqi.icon.png'
+const apps = [
+  { icon: broswer, name: '浏览器' },
+  { icon: location, name: '导航' },
+  { icon: mic, name: '语音助手' },
+  { icon: ticiqi, name: '提词器' },
+  { icon: camera, name: '拍照' }
+]
 
-const app = { id: 'weather', icon: weatherIcon, component: WeatherCard }
+// 滚动的物理参数
+const SCROLL_STEP = 10 // 每次按键滚动的基础距离
+const DECELERATION = 0.92 // 减速系数（略微调高以更快停下来）
+const SNAP_THRESHOLD = 1.5 // 停止滚动的阈值（降低以更快进入吸附状态）
+const MAX_SCALE = 1.8 // 中心图标的最大缩放比例
+const SNAP_DURATION = 300 // 吸附动画持续时间（毫秒），缩短以加快吸附速度
+
+interface CenterItem {
+  index: number
+  distance: number
+  element: HTMLDivElement
+}
 
 function App(): JSX.Element {
-  // 添加鼠标位置状态
-  const [mousePosition, setMousePosition] = useState({
-    x: window.innerWidth / 2,
-    y: window.innerHeight / 2
-  })
-
-  // 添加j键按下状态
-  const [isJKeyPressed, setIsJKeyPressed] = useState(false)
-
-  // 计算图标中心位置
-  const centerX = window.innerWidth / 2
-  const centerY = window.innerHeight / 2
-
-  // 添加键盘移动速度配置
-  const MOVE_SPEED = 10
+  const [isPressMode, setIsPressMode] = useState(false)
+  const [scrollVelocity, setScrollVelocity] = useState(0)
+  const [isScrolling, setIsScrolling] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
+  const requestRef = useRef<number>()
+  const itemsRef = useRef<(HTMLDivElement | null)[]>([])
 
   // 处理键盘事件
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      // 处理j键按下 - 切换模式
       if (e.key.toLowerCase() === 'j') {
-        setIsJKeyPressed((prev) => !prev)
-        return
+        setIsPressMode((prev) => !prev)
       }
 
-      setMousePosition((prev) => {
-        let newX = prev.x
-        let newY = prev.y
-
-        switch (e.key.toLowerCase()) {
-          // WASD控制
-          case 'w':
-            newY = Math.max(0, prev.y - MOVE_SPEED)
-            break
-          case 's':
-            newY = Math.min(window.innerHeight, prev.y + MOVE_SPEED)
-            break
-          case 'a':
-            newX = Math.max(0, prev.x - MOVE_SPEED)
-            break
-          case 'd':
-            newX = Math.min(window.innerWidth, prev.x + MOVE_SPEED)
-            break
+      if (isPressMode) {
+        if (e.key.toLowerCase() === 'a') {
+          // 向左滚动
+          setScrollVelocity((prev) => prev - SCROLL_STEP)
+          setIsScrolling(true)
+        } else if (e.key.toLowerCase() === 'd') {
+          // 向右滚动
+          setScrollVelocity((prev) => prev + SCROLL_STEP)
+          setIsScrolling(true)
         }
-
-        return { x: newX, y: newY }
-      })
+      }
     }
 
-    // 添加键盘事件监听
     window.addEventListener('keydown', handleKeyDown)
+    return () => window.removeEventListener('keydown', handleKeyDown)
+  }, [isPressMode])
 
-    // 清理事件监听
-    return () => {
-      window.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [])
+  // 获取当前中心位置附近的元素
+  const getCenterItem = useCallback((): CenterItem | null => {
+    if (!containerRef.current || itemsRef.current.length === 0) return null
 
-  // 添加鼠标移动事件处理函数
-  const handleMouseMove = (e: React.MouseEvent) => {
-    setMousePosition({
-      x: e.clientX,
-      y: e.clientY
+    const containerRect = containerRef.current.getBoundingClientRect()
+    const containerCenter = containerRect.left + containerRect.width / 2
+
+    let closestItem: CenterItem | null = null
+    let minDistance = Infinity
+
+    itemsRef.current.forEach((item, index) => {
+      if (!item) return
+
+      const itemRect = item.getBoundingClientRect()
+      const itemCenter = itemRect.left + itemRect.width / 2
+      const distance = Math.abs(itemCenter - containerCenter)
+
+      if (distance < minDistance) {
+        minDistance = distance
+        closestItem = { index, distance, element: item }
+      }
     })
-  }
 
-  // 计算光束角度和长度
-  const calculateBeam = () => {
-    const screenWidth = window.innerWidth
-    const screenHeight = window.innerHeight
-    // 调整虚拟点位置到屏幕下方偏中间位置
-    const virtualPoint = {
-      x: screenWidth * 0.6, // 从最右侧(1.0)改为偏右一点(0.6)
-      y: screenHeight + 200
+    return closestItem
+  }, [containerRef, itemsRef])
+
+  // 计算缩放比例
+  const updateScaling = useCallback(() => {
+    if (!containerRef.current) return
+
+    const containerRect = containerRef.current.getBoundingClientRect()
+    const containerCenter = containerRect.left + containerRect.width / 2
+
+    itemsRef.current.forEach((item) => {
+      if (!item) return
+
+      const itemRect = item.getBoundingClientRect()
+      const itemCenter = itemRect.left + itemRect.width / 2
+      const distance = Math.abs(itemCenter - containerCenter)
+      const maxDistance = containerRect.width / 3 // 缩小有效范围，使缩放效果更加聚中
+
+      // 距离越小，缩放比例越大，使用更强的缩放函数
+      const scale = 1 + (MAX_SCALE - 1) * Math.pow(1 - Math.min(distance / maxDistance, 1), 2)
+
+      // 使用属性设置替代样式直接设置，以便更好地利用GPU加速
+      item.style.transform = `scale(${scale})`
+      item.style.transition = 'transform 0.1s ease-out' // 更快的过渡时间
+    })
+  }, [containerRef, itemsRef])
+
+  // 滚动到中心点附近的元素
+  const snapToCenter = useCallback(() => {
+    const centerItem = getCenterItem()
+    if (!centerItem || !containerRef.current) return
+
+    const containerRect = containerRef.current.getBoundingClientRect()
+    const containerCenter = containerRect.left + containerRect.width / 2
+    const itemRect = centerItem.element.getBoundingClientRect()
+    const itemCenter = itemRect.left + itemRect.width / 2
+
+    // 计算需要滚动的距离
+    const targetScrollLeft = containerRef.current.scrollLeft + (itemCenter - containerCenter)
+    const startScrollLeft = containerRef.current.scrollLeft
+
+    // 处理边缘情况 - 确保不会尝试滚动到超出范围的位置
+    const maxScrollLeft = containerRef.current.scrollWidth - containerRef.current.clientWidth
+    const adjustedTargetScrollLeft = Math.max(0, Math.min(maxScrollLeft, targetScrollLeft))
+    const adjustedScrollDistance = adjustedTargetScrollLeft - startScrollLeft
+
+    if (Math.abs(adjustedScrollDistance) < 1) return // 如果距离很小就不需要动画
+
+    // 使用动画帧平滑过渡
+    let startTime: number | null = null
+    const duration = SNAP_DURATION
+
+    const animateSnap = (timestamp: number) => {
+      if (!startTime) startTime = timestamp
+      const elapsed = timestamp - startTime
+      const progress = Math.min(elapsed / duration, 1)
+
+      // 使用缓动函数使动画更自然，但起始加速更快
+      const easeProgress = easeOutQuad(progress)
+
+      if (containerRef.current) {
+        containerRef.current.scrollLeft = startScrollLeft + adjustedScrollDistance * easeProgress
+        updateScaling() // 在每一帧更新缩放比例
+      }
+
+      if (progress < 1) {
+        requestAnimationFrame(animateSnap)
+      }
     }
 
-    // 计算角度
-    const angle = Math.atan2(virtualPoint.y - mousePosition.y, virtualPoint.x - mousePosition.x)
+    requestAnimationFrame(animateSnap)
+  }, [getCenterItem, containerRef, updateScaling])
 
-    // 计算光束长度
-    const length = Math.sqrt(
-      Math.pow(virtualPoint.x - mousePosition.x, 2) + Math.pow(virtualPoint.y - mousePosition.y, 2)
-    )
-
-    return { angle: angle * (180 / Math.PI), length }
+  // 缓动函数：更加自然的加速过渡
+  const easeOutQuad = (t: number): number => {
+    // 结合两种缓动效果，开始更快，结束更平滑
+    return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2
   }
 
-  const { angle, length } = calculateBeam()
+  // 动画滚动效果
+  const animateScroll = useCallback(() => {
+    if (!containerRef.current) return
 
-  // 计算图标位置 - 基于屏幕中心位置计算偏移量
-  const calculateIconPosition = () => {
-    if (!isJKeyPressed) {
-      // 不按j键时，图标在屏幕中心
-      return {
-        x: centerX - (6 * window.innerWidth) / 100,
-        y: centerY - (6 * window.innerWidth) / 100
-      }
-    } else {
-      // 按j键时，基于屏幕中心计算偏移
-      // 计算鼠标相对于屏幕中心的偏移量
-      const offsetX = mousePosition.x - centerX
-      const offsetY = mousePosition.y - centerY
+    if (Math.abs(scrollVelocity) < SNAP_THRESHOLD) {
+      // 速度很小时停止滚动并对齐中心
+      setScrollVelocity(0)
+      setIsScrolling(false)
+      snapToCenter() // 启动平滑吸附
+      return
+    }
 
-      // 将偏移量缩小（比如乘以0.3），使图标移动幅度小于鼠标
-      const scaleFactor = 1
+    // 应用物理减速
+    setScrollVelocity((prev) => prev * DECELERATION)
 
-      return {
-        x: centerX + offsetX * scaleFactor - (6 * window.innerWidth) / 100,
-        y: centerY + offsetY * scaleFactor - (6 * window.innerWidth) / 100
+    // 更新滚动位置
+    containerRef.current.scrollLeft += scrollVelocity
+
+    // 立即更新元素缩放 - 每一帧都更新以获得即时效果
+    updateScaling()
+
+    // 继续动画
+    requestRef.current = requestAnimationFrame(animateScroll)
+  }, [scrollVelocity, snapToCenter, updateScaling])
+
+  // 启动或停止滚动动画
+  useEffect(() => {
+    if (isScrolling) {
+      // 开始滚动时立即更新一次缩放比例
+      updateScaling()
+      requestRef.current = requestAnimationFrame(animateScroll)
+    }
+
+    return () => {
+      if (requestRef.current) {
+        cancelAnimationFrame(requestRef.current)
       }
     }
-  }
+  }, [isScrolling, scrollVelocity, animateScroll, updateScaling])
 
-  const iconPosition = calculateIconPosition()
+  // 禁用鼠标和触控板事件
+  useEffect(() => {
+    const disableScrolling = (e: WheelEvent | TouchEvent) => {
+      e.preventDefault()
+      e.stopPropagation()
+      return false
+    }
+
+    const container = containerRef.current
+    if (container) {
+      // 禁用鼠标滚轮事件
+      container.addEventListener('wheel', disableScrolling, { passive: false })
+      // 禁用触控板手势
+      container.addEventListener('touchmove', disableScrolling, { passive: false })
+      // 禁用拖拽事件
+      container.addEventListener('mousedown', (e) => e.preventDefault())
+
+      // 添加滚动事件监听器，确保在滚动时实时更新缩放
+      const handleScroll = () => updateScaling()
+      container.addEventListener('scroll', handleScroll)
+    }
+
+    return () => {
+      if (container) {
+        container.removeEventListener('wheel', disableScrolling)
+        container.removeEventListener('touchmove', disableScrolling)
+        container.removeEventListener('mousedown', (e) => e.preventDefault())
+        container.removeEventListener('scroll', () => updateScaling())
+      }
+    }
+  }, [containerRef, updateScaling])
+
+  // 初始缩放更新
+  useEffect(() => {
+    updateScaling()
+  }, [updateScaling])
 
   return (
-    <div className="w-screen h-screen bg-black/30" onMouseMove={handleMouseMove}>
-      {/* 增强光束中心点效果 */}
+    <div className="w-screen h-screen bg-black flex justify-center items-center">
       <div
-        className="z-1000 pointer-events-none fixed w-6 h-6 rounded-full bg-white/40 blur-md"
-        style={{
-          left: mousePosition.x - 8,
-          top: mousePosition.y - 8,
-          boxShadow: `
-            0 0 60px 30px rgba(255,255,255,0.2),
-            0 0 30px 15px rgba(255,255,255,0.3),
-            0 0 15px 5px rgba(255,255,255,0.4)
-          `
-        }}
-      />
-      <div
-        className="z-1000 pointer-events-none fixed size-4 rounded-full border-white border-2 bg-white/20"
-        style={{
-          left: mousePosition.x - 8,
-          top: mousePosition.y - 8
-        }}
-      />
-
-      {/* 增强射线光束效果 */}
-      <div
-        className="z-1000 pointer-events-none fixed origin-left"
-        style={{
-          left: mousePosition.x,
-          top: mousePosition.y,
-          width: length,
-          height: '3px',
-          background: `
-            linear-gradient(90deg, 
-              rgba(255,255,255,0.8) 0%,
-              rgba(255,255,255,0.4) 40%,
-              rgba(255,255,255,0.1) 100%
-            )
-          `,
-          transform: `rotate(${angle}deg)`,
-          opacity: 0.7,
-          filter: 'blur(0.5px)',
-          boxShadow: '0 0 20px 2px rgba(255,255,255,0.3)'
-        }}
-      />
-
-      {/* 添加辅助光束效果 */}
-      <div
-        className="pointer-events-none fixed origin-left"
-        style={{
-          left: mousePosition.x,
-          top: mousePosition.y,
-          width: length,
-          height: '1px',
-          background: `
-            linear-gradient(90deg, 
-              rgba(255,255,255,0.5) 0%,
-              rgba(255,255,255,0.2) 100%
-            )
-          `,
-          transform: `rotate(${angle}deg) translateY(2px)`,
-          opacity: 0.5,
-          filter: 'blur(1px)'
-        }}
-      />
-
-      <motion.div
-        key={app.id}
-        className="absolute flex flex-col items-center gap-2 cursor-pointer rounded-2xl z-50"
-        animate={{
-          x: iconPosition.x,
-          y: iconPosition.y
-        }}
-        transition={{
-          type: 'spring',
-          stiffness: 300,
-          damping: 15,
-          mass: 1,
-          bounce: 0.5
-        }}
+        ref={containerRef}
+        className="flex items-center h-full gap-x-[11vw] px-[50vw] overflow-x-auto no-scrollbar touch-none"
       >
-        <div className="transform rounded-2xl w-[12vw] h-[12vw] flex items-center justify-center">
-          <img src={app.icon} className="w-full h-full object-cover" />
+        {apps.map((app, index) => (
+          <div
+            key={app.name}
+            ref={(el) => (itemsRef.current[index] = el)}
+            className="flex-none flex flex-col items-center space-y-6 transform will-change-transform"
+          >
+            <img src={app.icon} alt={app.name} className="size-32" />
+            <span className="text-2xl">{app.name}</span>
+          </div>
+        ))}
+      </div>
+      {isPressMode && (
+        <div className="absolute bottom-4 left-4 bg-white/20 px-4 py-2 rounded text-white">
+          按下模式已启用 (A/D 键滚动)
         </div>
-      </motion.div>
+      )}
     </div>
   )
 }
